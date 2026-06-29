@@ -1,0 +1,162 @@
+
+import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
+
+# Настройки (Твои данные уже внесены)
+API_TOKEN = '8754491674:AAG2ctJ-QqFy33jeYtd-kB9933KgA8bhkks'
+ADMIN_ID = 8567581201  
+CHANNEL_USERNAME = '@твой_канал'  # Замени на юзернейм своего канала
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
+
+class OrderForm(StatesGroup):
+    tiktok_username = State()
+    story_text = State()
+    media = State()
+
+def get_main_menu():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🎬 Попасть в видео")],
+        [KeyboardButton(text="🛍️ Каталог услуг"), KeyboardButton(text="⭐ Отзывы")]
+    ], resize_keyboard=True)
+
+def get_catalog_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Купить сайт (100 Stars)", callback_data="buy_site")],
+        [InlineKeyboardButton(text="🎨 Дизайн / Картинки (50 Stars)", callback_data="buy_design")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+    ])
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer("Привет! Добро пожаловать. Выбери нужное действие в меню:", reply_markup=get_main_menu())
+
+@dp.message(F.text == "⭐ Отзывы")
+async def show_reviews(message: types.Message):
+    await message.answer("Тут будут отзывы твоих клиентов! (Можно вставить ссылку на канал с отзывами или текст).")
+
+async def check_subscription(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception:
+        return False
+
+@dp.message(F.text == "🎬 Попасть в видео")
+async def start_order(message: types.Message, state: FSMContext):
+    is_subscribed = await check_subscription(message.from_user.id)
+    if not is_subscribed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Подписаться на канал", url=f"https://t.me{CHANNEL_USERNAME.replace('@', '')}")],
+            [InlineKeyboardButton(text="🔄 Я подписался", callback_data="check_sub_again")]
+        ])
+        await message.answer(f"Для подачи заявки необходимо подписаться на наш канал {CHANNEL_USERNAME}!", reply_markup=keyboard)
+        return
+
+    await message.answer("Введите ваш ник в TikTok:")
+    await state.set_state(OrderForm.tiktok_username)
+
+@dp.callback_query(F.data == "check_sub_again")
+async def recheck_sub(call: types.CallbackQuery, state: FSMContext):
+    is_subscribed = await check_subscription(call.from_user.id)
+    if is_subscribed:
+        await call.message.answer("Подписка подтверждена! Введите ваш ник в TikTok:")
+        await state.set_state(OrderForm.tiktok_username)
+    else:
+        await call.answer("Вы всё ещё не подписались!", show_alert=True)
+
+@dp.message(OrderForm.tiktok_username)
+async def process_tiktok(message: types.Message, state: FSMContext):
+    await state.update_data(tiktok=message.text)
+    await message.answer("Отправьте вашу историю (текст):")
+    await state.set_state(OrderForm.story_text)
+
+@dp.message(OrderForm.story_text)
+async def process_story(message: types.Message, state: FSMContext):
+    await state.update_data(story=message.text)
+    await message.answer("Прикрепите медиафайл (фото или видео):")
+    await state.set_state(OrderForm.media)
+
+@dp.message(OrderForm.media)
+async def process_media(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_mention = message.from_user.mention_html()
+    
+    admin_text = (
+        f"<b>Новая заявка в видео!</b>\n\n"
+        f"👤 Пользователь: {user_mention} (ID: {message.from_user.id})\n"
+        f"📱 TikTok: {data['tiktok']}\n"
+        f"📝 История: {data['story']}"
+    )
+
+    if message.photo:
+        await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=admin_text, parse_mode="HTML")
+    elif message.video:
+        await bot.send_video(chat_id=ADMIN_ID, video=message.video.file_id, caption=admin_text, parse_mode="HTML")
+    elif message.document:
+        await bot.send_document(chat_id=ADMIN_ID, document=message.document.file_id, caption=admin_text, parse_mode="HTML")
+    else:
+        await message.answer("Пожалуйста, отправьте именно медиафайл (фото, видео или документ).")
+        return
+
+    await message.answer("Спасибо! Заявка принята.")
+    await state.clear()
+
+@dp.message(F.text == "🛍️ Каталог услуг")
+async def show_catalog(message: types.Message):
+    await message.answer("Выберите интересующую услугу:", reply_markup=get_catalog_menu())
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(call: types.CallbackQuery):
+    await call.message.edit_text("Вы вернулись в главное меню услуг.", reply_markup=get_catalog_menu())
+
+@dp.callback_query(F.data.in_(["buy_site", "buy_design"]))
+async def send_invoice(call: types.CallbackQuery):
+    if call.data == "buy_site":
+        title, desc, price, payload = "Купить сайт", "Разработка полноценного сайта под ключ", 100, "payload_site"
+    else:
+        title, desc, price, payload = "Дизайн / Картинки", "Разработка индивидуального дизайна", 50, "payload_design"
+
+    await bot.send_invoice(
+        chat_id=call.message.chat.id,
+        title=title,
+        description=desc,
+        payload=payload,
+        provider_token="",  
+        currency="XTR",     
+        prices=[LabeledPrice(label=title, amount=price)]
+    )
+    await call.answer()
+
+@dp.pre_checkout_query()
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def success_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    user_mention = message.from_user.mention_html()
+    
+    if payload == "payload_site":
+        product = "Купить сайт"
+        delivery_info = "Вот ваша ссылка на ТЗ и бриф для разработки сайта: https://example.com"
+    else:
+        product = "Дизайн / Картинки"
+        delivery_info = "Вот ваша ссылка на пак с материалами / контакты дизайнера: https://example.com"
+
+    await message.answer(f"🎉 Спасибо за оплату товара <b>{product}</b>!\n\n{delivery_info}", parse_mode="HTML")
+    
+    await bot.send_message(
+        chat_id=ADMIN_ID, 
+        text=f"💰 <b>Успешная оплата!</b>\n\n👤 Клиент: {user_mention}\n📦 Товар: {product}", 
+        parse_mode="HTML"
+    )
+
+if __name__ == '__main__':
+    dp.run_polling(bot)
